@@ -1,10 +1,7 @@
 /* =========================================================================
    ALQUIM — CATÁLOGO DE PRODUTOS (dados)
    -------------------------------------------------------------------------
-   Arquivo separado da lógica (script.js) para facilitar a manutenção:
-   para incluir/alterar uma peça basta editar este arquivo.
-
-   Cada produto possui:
+  Cada produto possui:
    - id, categoria, nome, preco (R$), selo (opcional), destaque (home)
    - resumo (card) e descricao (página do produto)
    - material e pedras (ficha técnica)

@@ -1,0 +1,6 @@
+# SEO: permite que os buscadores leiam o site inteiro.
+# Páginas privadas (carrinho, checkout, pedido, conta, métricas) recebem <meta name="robots" content="noindex">
+# pelo próprio script.js. Não há sitemap.xml porque as rotas usam "#" (hash), que os buscadores ignoram;
+# veja a seção de limitações do README para o que mudaria em produção.
+User-agent: *
+Allow: /

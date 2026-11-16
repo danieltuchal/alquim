@@ -1,0 +1,28 @@
+# CI (integração contínua): a cada push ou pull request, o GitHub roda todos os testes automaticamente.
+# Assim, quem fez a mudança descobre na hora se quebrou o carrinho, a acessibilidade, a segurança ou a responsividade.
+name: Testes
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+
+      - name: Instalar o Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Instalar dependências (Playwright e axe-core)
+        run: npm install
+
+      - name: Instalar o navegador de teste (Chromium)
+        run: npx playwright install --with-deps chromium
+
+      - name: Rodar os testes (e2e, segurança, responsivo, acessibilidade)
+        run: npm test

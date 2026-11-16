@@ -1,0 +1,19 @@
+{
+  "name": "alquim",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Alquim — e-commerce de joias (projeto acadêmico em HTML, CSS e JavaScript puros)",
+  "scripts": {
+    "serve": "python3 -m http.server 8080",
+    "test": "node tests/e2e.js && node tests/seguranca.js && node tests/responsivo.js && node tests/a11y.js",
+    "test:e2e": "node tests/e2e.js",
+    "test:seguranca": "node tests/seguranca.js",
+    "test:responsivo": "node tests/responsivo.js",
+    "test:a11y": "node tests/a11y.js",
+    "imagens": "python3 tools/gerar-webp.py"
+  },
+  "devDependencies": {
+    "axe-core": "^4.10.0",
+    "playwright": "^1.50.0"
+  }
+}

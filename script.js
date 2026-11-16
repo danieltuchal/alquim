@@ -1804,7 +1804,7 @@ function fecharMenu() {
 
 function rotear() {
   const hash = location.hash;
-  if (hash && !hash.startsWith('#/')) return;            // âncoras comuns (ex.: #conteudo) não são rotas
+  if (hash && !hash.startsWith('#/')) return;            
   const [caminho, consulta = ''] = hash.slice(1).split('?');
   const partes = caminho.split('/').filter(Boolean);
   const params = new URLSearchParams(consulta);
@@ -1815,7 +1815,7 @@ function rotear() {
 
   const main = $('#conteudo');
   main.innerHTML = view.html;
-  main.removeAttribute('data-carregando');   // libera a altura reservada (ver style.css)
+  main.removeAttribute('data-carregando');   
   envolverTabelas(main);
   document.title = `${view.titulo} — Alquim`;
   atualizarSEO(view, partes[0] || 'home');
@@ -1876,7 +1876,7 @@ function iniciar() {
     location.hash = '#/colecao' + (q ? '?q=' + encodeURIComponent(q) : '');
   });
 
-  // Atalhos "Pular para…" — precisam tratar o clique porque o hash é usado pelo roteador
+  // Atalhos "Pular para…" 
   const destinos = {
     conteudo: () => $('#conteudo'),
     menu: () => (nav.offsetParent !== null ? $('a', nav) : botaoMenu),
@@ -1889,7 +1889,7 @@ function iniciar() {
     if (alvo) alvo.focus();
   }));
 
-  // Botões "Adicionar" dos cards (Home, Vitrine, Relacionados): um único ouvinte delegado
+  // Botões "Adicionar" dos cards (Home, Vitrine, Relacionados)
   $('#conteudo').addEventListener('click', (e) => {
     const botao = e.target.closest('button[data-add]');
     if (!botao) return;

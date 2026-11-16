@@ -1,0 +1,16 @@
+# Cabeçalhos de segurança e cache para PRODUÇÃO (formato do Netlify; no GitHub Pages não é lido).
+# Por que existe: algumas proteções só funcionam como cabeçalho HTTP e não como <meta> no HTML
+# (por exemplo, frame-ancestors, que impede o site de ser embutido em outro site — "clickjacking").
+# A mesma CSP também está no <meta> do index.html, para funcionar ao abrir o arquivo direto no computador.
+# Referência: OWASP Top 10 (A05 — Configuração de segurança) e OWASP Secure Headers Project.
+
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: no-referrer
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+
+# Imagens mudam pouco: cache de 7 dias deixa as visitas seguintes mais rápidas (Performance).
+/img/*
+  Cache-Control: public, max-age=604800
