@@ -11,13 +11,39 @@
   <title>Alquim — Joias finas em Azul Tiffany</title>
   <meta name="description" content="Alquim: joias artesanais e finas. Conheça a coleção Tiffany Blue com anéis, brincos, colares, pulseiras e relógios. Projeto acadêmico de e-commerce.">
   <meta name="theme-color" content="#81D8D0">
+
+  <!-- SEGURANÇA: Política de Segurança de Conteúdo.
+       Só permite scripts e imagens do próprio site (bloqueia injeção de scripts de terceiros/XSS).
+       'unsafe-inline' fica apenas em estilos (há atributos style em alguns componentes).
+       Em produção, os mesmos cabeçalhos são enviados pelo servidor (veja o arquivo _headers). -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <meta name="referrer" content="no-referrer">
+
+  <!-- SEO: robots (ajustado por página no script.js), autoria e Open Graph -->
+  <meta name="robots" content="index, follow">
+  <meta name="author" content="[Nome do grupo] — projeto acadêmico">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Alquim">
+  <meta property="og:locale" content="pt_BR">
+  <meta property="og:title" content="Alquim — Joias finas em Azul Tiffany">
+  <meta property="og:description" content="Joias artesanais e finas. Conheça a coleção Tiffany Blue.">
+  <!-- SEO: dados estruturados (schema.org) da loja; as páginas de produto recebem o próprio JSON-LD pelo script.js -->
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Store","name":"Alquim","description":"Joias artesanais e finas da coleção Tiffany Blue (loja fictícia, projeto acadêmico).","priceRange":"R$ 349 a R$ 2.490","inLanguage":"pt-BR"}</script>
+
+  <!-- PERFORMANCE: a imagem principal da Home é pedida cedo (melhora o LCP / Core Web Vitals) -->
+  <link rel="preload" as="image" href="img/webp/brinco2-pessoa-960.webp" imagesrcset="img/webp/brinco2-pessoa-480.webp 480w, img/webp/brinco2-pessoa-960.webp 960w" imagesizes="(min-width: 900px) 40vw, 100vw" fetchpriority="high">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M6 4h12l4 5-10 11L2 9z' fill='%2381D8D0' stroke='%2315191D' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-  <!-- ACESSIBILIDADE: link para pular direto ao conteúdo (primeiro item focável da página) -->
-  <a class="skip-link" href="#conteudo" id="skip-link">Ir para o conteúdo principal</a>
+  <!-- ACESSIBILIDADE (eMAG): atalhos para pular blocos; aparecem ao navegar com Tab (primeiros itens focáveis da página) -->
+  <div class="skip-links">
+    <a href="#conteudo" data-alvo="conteudo">Ir para o conteúdo</a>
+    <a href="#menu-principal" data-alvo="menu">Ir para o menu</a>
+    <a href="#busca-q" data-alvo="busca">Ir para a busca</a>
+    <a href="#rodape" data-alvo="rodape">Ir para o rodapé</a>
+  </div>
 
   <!-- =====================================================================
        LGPD — BANNER DE CONSENTIMENTO DE COOKIES (exibido na primeira visita)
@@ -54,12 +80,29 @@
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3z"/><path d="M9 12l2 2 4-4"/></symbol>
     <symbol id="i-card" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/></symbol>
     <symbol id="i-gift" viewBox="0 0 24 24"><rect x="3" y="9" width="18" height="11"/><path d="M12 9v11M3 13h18M12 9C9 9 7 8 7 6.5S9.500 4 12 9c2.500-5 5-3.500 5-2.500S15 9 12 9"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.5-4.5"/></symbol>
     <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
   </svg>
 
   <!-- Faixa de aviso -->
-  <div class="announce" role="note">
+  <div class="announce" role="region" aria-label="Aviso do projeto">
     Projeto acadêmico — loja fictícia. <strong>Frete grátis</strong> acima de R$&nbsp;500 · Parcele em até <strong>10x</strong> sem juros
+  </div>
+
+  <!-- BARRA DE ACESSIBILIDADE (padrão eMAG): tamanho do texto e alto contraste.
+       A escolha só é lembrada se o usuário autorizar "Preferências" nos cookies (LGPD). -->
+  <div class="a11y-bar" role="region" aria-label="Ferramentas de acessibilidade">
+    <div class="container a11y-bar-inner">
+      <span class="a11y-titulo" id="a11y-titulo">Acessibilidade:</span>
+      <div class="a11y-tools" role="group" aria-labelledby="a11y-titulo">
+        <button type="button" id="fonte-menos" aria-disabled="false"><span aria-hidden="true">A−</span><span class="sr-only">Diminuir tamanho do texto</span></button>
+        <button type="button" id="fonte-normal"><span aria-hidden="true">A</span><span class="sr-only">Tamanho normal do texto</span></button>
+        <button type="button" id="fonte-mais" aria-disabled="false"><span aria-hidden="true">A+</span><span class="sr-only">Aumentar tamanho do texto</span></button>
+        <button type="button" id="btn-contraste" aria-pressed="false">Alto contraste</button>
+      </div>
+      <a class="a11y-link" href="#/mapa-do-site">Mapa do site</a>
+    </div>
+    <p class="sr-only" id="a11y-status" role="status"></p>
   </div>
 
   <!-- =====================================================================
@@ -94,18 +137,30 @@
           <svg class="icon" aria-hidden="true"><use href="#i-user"/></svg>
           <span class="conta-label" id="conta-label">Entrar</span>
         </a>
+        <button type="button" class="icon-btn" id="busca-toggle" aria-expanded="false" aria-controls="busca-painel">
+          <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+          <span class="sr-only">Buscar</span>
+        </button>
         <a class="icon-btn cart-link" href="#/carrinho" id="link-carrinho" aria-label="Carrinho, vazio">
           <svg class="icon" aria-hidden="true"><use href="#i-bag"/></svg>
           <span class="cart-count" id="cart-count" data-zero="true" aria-hidden="true">0</span>
         </a>
       </div>
     </div>
+    <!-- Busca interna: abre abaixo do cabeçalho e leva à vitrine já filtrada -->
+    <div id="busca-painel" class="busca-painel" hidden>
+      <form id="form-busca" class="container busca-form" role="search" aria-label="Buscar joias">
+        <label for="busca-q" class="sr-only">Buscar joias</label>
+        <input id="busca-q" type="search" placeholder="Buscar joias (ex.: flor, estrela, argola)" autocomplete="off">
+        <button type="submit" class="btn btn-small">Buscar</button>
+      </form>
+    </div>
   </header>
 
   <!-- =====================================================================
        CONTEÚDO PRINCIPAL (landmark main) — preenchido pelo script.js
        ===================================================================== -->
-  <main id="conteudo" tabindex="-1">
+  <main id="conteudo" tabindex="-1" data-carregando>
     <noscript>
       <div class="container section">
         <h1>JavaScript necessário</h1>
@@ -115,9 +170,9 @@
   </main>
 
   <!-- =====================================================================
-       RODAPÉ (landmark contentinfo) — LGPD: Política, Termos e Preferências de cookies
+       RODAPÉ — LGPD: Política, Termos e Preferências de cookies
        ===================================================================== -->
-  <footer class="site-footer on-dark">
+  <footer class="site-footer on-dark" id="rodape" tabindex="-1">
     <div class="container">
       <div class="footer-grid">
         <section aria-labelledby="rodape-marca">
@@ -141,11 +196,13 @@
         </nav>
 
         <nav aria-labelledby="rodape-ajuda">
-          <h2 id="rodape-ajuda">Minha conta</h2>
+          <h2 id="rodape-ajuda">Ajuda e projeto</h2>
           <ul>
             <li><a href="#/conta">Entrar / Cadastrar</a></li>
             <li><a href="#/carrinho">Carrinho</a></li>
-            <li><a href="#/conta">Meus dados e pedidos</a></li>
+            <li><a href="#/mapa-do-site">Mapa do site</a></li>
+            <li><a href="#/guia-de-estilo">Guia de estilo</a></li>
+            <li><a href="#/metricas">Painel de métricas</a></li>
           </ul>
         </nav>
 
@@ -155,6 +212,7 @@
           <ul>
             <li><a href="#/privacidade">Política de Privacidade</a></li>
             <li><a href="#/termos">Termos de Uso</a></li>
+            <li><a href="#/titular">Canal do titular (LGPD)</a></li>
             <li><button type="button" class="link-btn" id="abrir-cookies" aria-haspopup="dialog">Preferências de cookies</button></li>
           </ul>
         </nav>
@@ -182,12 +240,12 @@
           <li class="pref">
             <label for="ck-preferencias">Preferências</label>
             <input type="checkbox" class="switch" id="ck-preferencias" aria-describedby="ck-preferencias-d">
-            <p id="ck-preferencias-d">Lembram escolhas de visualização, como filtros e ordenação da vitrine.</p>
+            <p id="ck-preferencias-d">Lembram o tamanho do texto e o alto contraste escolhidos na barra de acessibilidade.</p>
           </li>
           <li class="pref">
             <label for="ck-estatisticas">Estatísticas</label>
             <input type="checkbox" class="switch" id="ck-estatisticas" aria-describedby="ck-estatisticas-d">
-            <p id="ck-estatisticas-d">Ajudariam a entender como a loja é usada, de forma agregada. (Nesta simulação não há ferramenta de análise ativa.)</p>
+            <p id="ck-estatisticas-d">Contagens anônimas de páginas e ações, medição de desempenho e registro de erros. Ficam só neste navegador (veja o Painel de métricas) e são apagadas ao revogar.</p>
           </li>
           <li class="pref">
             <label for="ck-marketing">Marketing</label>

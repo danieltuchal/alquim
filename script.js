@@ -1,5 +1,5 @@
 /* =========================================================================
-   ALQUIM — LÓGICA DA LOJA (JavaScript puro, sem bibliotecas)
+   ALQUIM
    -------------------------------------------------------------------------
    Sumário
      1. Configurações e utilitários
@@ -73,6 +73,7 @@ const Carrinho = {
 
   salvar() { Store.set('cart', this.itens); atualizarCabecalho(); },
   adicionar(id, tam = '', qtd = 1) {
+    Metricas.evento('add_carrinho');
     const chave = `${id}|${tam}`;
     const existente = this.itens.find(i => i.chave === chave);
     if (existente) existente.qtd = Math.min(CFG.QTD_MAX, existente.qtd + qtd);
@@ -102,17 +103,43 @@ const Carrinho = {
 };
 
 /* ---------- Usuários e sessão (simulação de cadastro/login) ----------
-   ATENÇÃO (para a apresentação): em um sistema real, senhas NUNCA são tratadas só no navegador;
-   isso é feito no servidor, com hash forte (bcrypt/argon2). Aqui guardamos apenas um hash SHA-256
-   com "sal" para que a senha não fique em texto puro no localStorage. */
-async function hashSenha(senha, sal) {
-  const texto = `${sal}:${senha}`;
-  if (window.crypto && crypto.subtle) {
-    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(texto));
-    return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
-  }
-  return 'b64:' + btoa(unescape(encodeURIComponent(texto)));   // plano B simples (não seguro)
+   SEGURANÇA (OWASP A02 e A07): a senha nunca é guardada em texto puro. Usamos PBKDF2-SHA256
+   (150.000 iterações) com um "sal" aleatório por usuário, pela API nativa do navegador (Web Crypto).
+   ATENÇÃO (para a apresentação): em um sistema real isso é feito no SERVIDOR (argon2/bcrypt), com HTTPS;
+   senhas e autenticação nunca devem depender só do navegador. */
+const PBKDF2_ITERACOES = 150000;
+const hex = (buf) => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+async function pbkdf2(senha, saltHex, iteracoes) {
+  const sal = Uint8Array.from(saltHex.match(/.{2}/g).map(h => parseInt(h, 16)));
+  const chave = await crypto.subtle.importKey('raw', new TextEncoder().encode(senha), 'PBKDF2', false, ['deriveBits']);
+  return hex(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: sal, iterations: iteracoes }, chave, 256));
 }
+async function criarCredencial(senha) {
+  if (window.crypto && crypto.subtle) {
+    const salt = hex(crypto.getRandomValues(new Uint8Array(16)));
+    return { algo: 'pbkdf2-sha256', iter: PBKDF2_ITERACOES, salt, hash: await pbkdf2(senha, salt, PBKDF2_ITERACOES) };
+  }
+  // Plano B (ex.: página aberta por http:// em rede local, onde o navegador desativa crypto.subtle). NÃO é seguro.
+  return { algo: 'fraco-b64', hash: btoa(unescape(encodeURIComponent(senha))) };
+}
+async function verificarSenha(usuario, senha) {
+  if (usuario.algo === 'pbkdf2-sha256') return (window.crypto && crypto.subtle) ? (await pbkdf2(senha, usuario.salt, usuario.iter)) === usuario.hash : false;
+  if (usuario.algo === 'fraco-b64') return btoa(unescape(encodeURIComponent(senha))) === usuario.hash;
+  return false;
+}
+/* Limitação de tentativas de login (OWASP A07): após 5 erros seguidos, bloqueia por 30 s.
+   Contador global e sem dados pessoais. No navegador isto é só demonstração; em produção o bloqueio é no servidor. */
+const Tentativas = {
+  LIMITE: 5, BLOQUEIO_MS: 30000,
+  restante() { const t = Store.get('tentativas', { n: 0, ate: 0 }); return Math.max(0, Math.ceil((t.ate - Date.now()) / 1000)); },
+  falhou() {
+    const t = Store.get('tentativas', { n: 0, ate: 0 });
+    t.n += 1;
+    if (t.n >= this.LIMITE) { t.ate = Date.now() + this.BLOQUEIO_MS; t.n = 0; }
+    Store.set('tentativas', t);
+  },
+  zerar() { Store.remove('tentativas'); }
+};
 const Sessao = {
   atual() { return Store.get('session', null); },
   entrar(u) { Store.set('session', { email: u.email, nome: u.nome }); atualizarCabecalho(); },
@@ -133,11 +160,7 @@ function atualizarCabecalho() {
   $('#link-conta').setAttribute('aria-label', u ? `Minha conta, ${u.nome}` : 'Entrar ou criar conta');
 }
 
-/* =========================================================================
-   3. LGPD — CONSENTIMENTO DE COOKIES
-   O registro da escolha é guardado com versão e data (prova do consentimento — art. 8º, §2º).
-   Os scripts opcionais (estatísticas, marketing) só deveriam ser carregados dentro de aplicarConsentimento().
-   ========================================================================= */
+/* ===========================3. LGPD — CONSENTIMENTO DE COOKIES===============================*/
 const Consentimento = {
   VERSAO: 1,
   ler() { const c = Store.get('consent', null); return c && c.versao === this.VERSAO ? c : null; },
@@ -149,12 +172,17 @@ const Consentimento = {
     };
     Store.set('consent', c);
     aplicarConsentimento(c);
+    Visual.salvar();      // guarda (ou apaga) o tamanho de texto/contraste conforme o consentimento de "Preferências"
     return c;
   }
 };
 function aplicarConsentimento(c) {
-  // Ponto de extensão: aqui seria carregado (ou não) um script de análise/marketing.
-  // Ex.: if (c.estatisticas) carregarAnalytics();
+  // Cada categoria só funciona com o consentimento correspondente (LGPD):
+  //  - Preferências: sem consentimento, não guardamos nada (a barra de acessibilidade vale só na visita atual)
+  //  - Estatísticas: métricas anônimas (ver Metricas); ao revogar, apagamos o que já foi coletado
+  //  - Marketing: não há nenhum serviço de marketing nesta simulação
+  if (!c.preferencias) Store.remove('prefs');
+  if (c.estatisticas) observarVitais(); else Metricas.zerar();
   document.documentElement.dataset.cookies = [c.preferencias && 'pref', c.estatisticas && 'est', c.marketing && 'mkt'].filter(Boolean).join(',') || 'necessarios';
 }
 function ajustarAlturaBanner() {
@@ -195,6 +223,99 @@ function iniciarCookies() {
   });
   window.addEventListener('resize', ajustarAlturaBanner);
 }
+
+/* ============ 3.1 PREFERÊNCIAS DE VISUALIZAÇÃO (barra de acessibilidade — padrão eMAG)============= */
+const Visual = {
+  estado: { fonte: 0, contraste: false },
+  PERCENTUAIS: [87.5, 100, 112.5, 125, 150],     // níveis -1, 0, 1, 2, 3
+  carregar() {
+    const c = Consentimento.ler();
+    const salvo = c && c.preferencias ? Store.get('prefs', null) : null;
+    if (salvo) this.estado = { fonte: Math.min(3, Math.max(-1, salvo.fonte | 0)), contraste: !!salvo.contraste };
+    this.aplicar();
+  },
+  aplicar() {
+    const r = document.documentElement;
+    r.dataset.fonte = String(this.estado.fonte);
+    r.dataset.contraste = this.estado.contraste ? 'alto' : 'normal';
+    const bc = $('#btn-contraste'); if (bc) bc.setAttribute('aria-pressed', String(this.estado.contraste));
+    const bm = $('#fonte-menos'), bM = $('#fonte-mais');
+    if (bm) bm.setAttribute('aria-disabled', String(this.estado.fonte <= -1));
+    if (bM) bM.setAttribute('aria-disabled', String(this.estado.fonte >= 3));
+  },
+  salvar() {
+    const c = Consentimento.ler();
+    if (c && c.preferencias) Store.set('prefs', this.estado); else Store.remove('prefs');
+  },
+  anunciar(msg) {
+    const c = Consentimento.ler();
+    const aviso = (c && c.preferencias) ? '' : ' Vale só nesta visita; para lembrar, autorize "Preferências" nos cookies.';
+    $('#a11y-status').textContent = msg + aviso;
+  },
+  ajustarFonte(delta) {
+    const novo = delta === 0 ? 0 : Math.min(3, Math.max(-1, this.estado.fonte + delta));
+    this.estado.fonte = novo;
+    this.aplicar(); this.salvar();
+    this.anunciar(`Tamanho do texto: ${this.PERCENTUAIS[novo + 1]}%.`);
+  },
+  alternarContraste() {
+    this.estado.contraste = !this.estado.contraste;
+    this.aplicar(); this.salvar();
+    this.anunciar(this.estado.contraste ? 'Alto contraste ativado.' : 'Alto contraste desativado.');
+  }
+};
+
+/* ======================3.2 ANALYTICS E MÉTRICAS (somente com consentimento de "Estatísticas")============================= */
+const Metricas = {
+  ativa() { const c = Consentimento.ler(); return !!(c && c.estatisticas); },
+  vazio() { return { desde: new Date().toISOString(), paginas: {}, eventos: {}, produtos: {}, vitais: {} }; },
+  ler() { return Store.get('metricas', null) || this.vazio(); },
+  pagina(rota) {
+    if (!this.ativa()) return;
+    const m = this.ler(); m.paginas[rota] = (m.paginas[rota] || 0) + 1; Store.set('metricas', m);
+  },
+  evento(nome, produtoId) {
+    if (!this.ativa()) return;
+    const m = this.ler(); m.eventos[nome] = (m.eventos[nome] || 0) + 1;
+    if (produtoId) m.produtos[produtoId] = (m.produtos[produtoId] || 0) + 1;
+    Store.set('metricas', m);
+  },
+  vital(nome, valor) {
+    if (!this.ativa()) return;
+    const m = this.ler(); m.vitais[nome] = valor; Store.set('metricas', m);
+  },
+  zerar() { Store.remove('metricas'); Store.remove('log'); }
+};
+function observarVitais() {
+  if (observarVitais.feito || !('PerformanceObserver' in window)) return;
+  observarVitais.feito = true;
+  try {
+    new PerformanceObserver((lista) => {
+      const e = lista.getEntries().pop(); if (e) Metricas.vital('LCP', Math.round(e.startTime));
+    }).observe({ type: 'largest-contentful-paint', buffered: true });
+    let cls = 0;
+    new PerformanceObserver((lista) => {
+      for (const e of lista.getEntries()) if (!e.hadRecentInput) cls += e.value;
+      Metricas.vital('CLS', Math.round(cls * 1000) / 1000);
+    }).observe({ type: 'layout-shift', buffered: true });
+    let pior = 0;
+    new PerformanceObserver((lista) => {
+      for (const e of lista.getEntries()) if (e.interactionId && e.duration > pior) { pior = e.duration; Metricas.vital('INP', Math.round(pior)); }
+    }).observe({ type: 'event', durationThreshold: 40, buffered: true });
+  } catch (e) { /* navegador sem suporte a algum tipo de métrica */ }
+}
+
+/* Monitoramento simples de erros (últimos 20), também só com consentimento de "Estatísticas". Sem dados pessoais. */
+const Monitor = {
+  registrar(msg, origem) {
+    if (!Metricas.ativa()) return;
+    const log = Store.get('log', []);
+    log.push({ quando: new Date().toISOString(), msg: String(msg).slice(0, 200), origem: String(origem || '').slice(0, 120) });
+    Store.set('log', log.slice(-20));
+  }
+};
+window.addEventListener('error', (e) => Monitor.registrar(e.message, `${(e.filename || '').split('/').pop()}:${e.lineno}`));
+window.addEventListener('unhandledrejection', (e) => Monitor.registrar((e.reason && e.reason.message) || e.reason, 'promise'));
 
 /* =========================================================================
    4. AVISOS (TOASTS) E FEEDBACK VISUAL
@@ -252,8 +373,6 @@ function confirmar({ titulo, texto, rotulo = 'Confirmar' }) {
 
 /* =========================================================================
    5. FORMULÁRIOS — COMPONENTES E VALIDAÇÃO ACESSÍVEL
-   - Cada campo tem <label>, dica (aria-describedby) e mensagem de erro própria.
-   - Ao enviar com erros: resumo de erros recebe o foco + campos recebem aria-invalid.
    ========================================================================= */
 function campo({ id, name, label, type = 'text', autocomplete = '', hint = '', obrig = true, valor = '', inputmode = '', maxlength = '' }) {
   const descricao = [hint ? `${id}-hint` : '', `${id}-err`].filter(Boolean).join(' ');
@@ -284,6 +403,17 @@ function campoCheck({ id, name, html }) {
   <div class="field field-check">
     <input type="checkbox" id="${id}" name="${name}" required aria-describedby="${id}-err">
     <label for="${id}">${html}</label>
+    <p class="field-error" id="${id}-err" hidden></p>
+  </div>`;
+}
+
+function campoTexto({ id, name, label, obrig = false, hint = '', maxlength = 500 }) {
+  const descricao = [hint ? `${id}-hint` : '', `${id}-err`].filter(Boolean).join(' ');
+  return `
+  <div class="field">
+    <label for="${id}">${label}${obrig ? '<span class="req" aria-hidden="true"> *</span>' : ' <span class="hint">(opcional)</span>'}</label>
+    <textarea id="${id}" name="${name}" rows="4" maxlength="${maxlength}" ${obrig ? 'required' : ''} aria-describedby="${descricao}"></textarea>
+    ${hint ? `<p class="hint" id="${id}-hint">${hint}</p>` : ''}
     <p class="field-error" id="${id}-err" hidden></p>
   </div>`;
 }
@@ -359,7 +489,13 @@ const textoConsentimento = (dados) => `Li e concordo com a <a href="#/privacidad
 /* =========================================================================
    6. COMPONENTES DE INTERFACE
    ========================================================================= */
-const img = (f, extra = '') => `<img src="${f.src}" alt="${esc(f.alt)}" width="1024" height="1024" decoding="async" ${extra}>`;
+/* Imagens responsivas (Performance / Core Web Vitals):
+   o navegador escolhe a versão WebP de 480 ou 960 px conforme a largura da tela (srcset + sizes);
+   o JPG original fica como plano B. Menos bytes = carregamento (LCP) mais rápido. */
+const srcsetDe = (src) => { const b = src.replace(/^img\//, 'img/webp/').replace(/\.jpg$/, ''); return `${b}-480.webp 480w, ${b}-960.webp 960w`; };
+const ir = (src, sizes) => `src="${src}" srcset="${srcsetDe(src)}" sizes="${sizes}"`;
+const TAMANHO_CARD = '(min-width: 900px) 25vw, (min-width: 600px) 33vw, 50vw';
+const img = (f, extra = '') => `<img ${ir(f.src, TAMANHO_CARD)} alt="${esc(f.alt)}" width="1024" height="1024" decoding="async" ${extra}>`;
 const parcela = (preco) => moeda(arredondar(preco / CFG.PARCELAS));
 
 /* Card de produto — imagem da peça, e na passagem do mouse/foco aparece a foto "em uso" */
@@ -373,7 +509,7 @@ function cardProduto(p) {
     <div class="card-media">
       ${p.selo ? `<span class="selo">${esc(p.selo)}</span>` : ''}
       ${img(fProduto, 'loading="lazy"')}
-      ${fUso ? `<img class="img-uso" src="${fUso.src}" alt="" aria-hidden="true" width="1024" height="1024" loading="lazy" decoding="async">` : ''}
+      ${fUso ? `<img class="img-uso" ${ir(fUso.src, TAMANHO_CARD)} alt="" aria-hidden="true" width="1024" height="1024" loading="lazy" decoding="async">` : ''}
     </div>
     <div class="card-body">
       <p class="card-cat">${nomeCategoria(p.categoria)}</p>
@@ -424,7 +560,7 @@ function viewHome() {
         </ul>
       </div>
       <figure class="hero-media">
-        <img src="${fotoHero.src}" alt="${esc(fotoHero.alt)}" width="1024" height="1024" fetchpriority="high">
+        <img ${ir(fotoHero.src, '(min-width: 900px) 40vw, 100vw')} alt="${esc(fotoHero.alt)}" width="1024" height="1024" fetchpriority="high">
       </figure>
     </div>
   </section>
@@ -437,7 +573,7 @@ function viewHome() {
         ${CATEGORIAS.map(c => {
           const f = fotoDe(c.capa.id, c.capa.tipo);
           return `<a class="tile" href="#/colecao?cat=${c.slug}">
-            <img src="${f.src}" alt="${esc(f.alt)}" width="1024" height="1024" loading="lazy" decoding="async">
+            <img ${ir(f.src, '(min-width: 900px) 20vw, (min-width: 600px) 33vw, 50vw')} alt="${esc(f.alt)}" width="1024" height="1024" loading="lazy" decoding="async">
             <span class="tile-label">${c.nome} <svg class="icon" aria-hidden="true"><use href="#i-arrow"/></svg></span>
           </a>`;
         }).join('')}
@@ -466,7 +602,7 @@ function viewHome() {
         <a class="btn" href="#/colecao">Descobrir a coleção <svg class="icon" aria-hidden="true"><use href="#i-arrow"/></svg></a>
       </div>
       <figure>
-        <img src="${fotoBanner.src}" alt="${esc(fotoBanner.alt)}" width="1024" height="1024" loading="lazy" decoding="async">
+        <img ${ir(fotoBanner.src, '(min-width: 900px) 45vw, 100vw')} alt="${esc(fotoBanner.alt)}" width="1024" height="1024" loading="lazy" decoding="async">
       </figure>
     </div>
   </section>
@@ -626,7 +762,7 @@ function viewColecao(_, params) {
     $('#limpar-filtros', main).addEventListener('click', () => { form.reset(); form.elements.cat.value = 'todas'; atualizar(); form.elements.q.focus(); });
     atualizar();
   };
-  return { titulo, html, depois, categoriaNav: est.cat };
+  return { titulo, html, depois, categoriaNav: est.cat, descricao: `${titulo}: joias com cristais em azul-turquesa, de R$ 349 a R$ 2.490, em até ${CFG.PARCELAS}x sem juros. Filtre por categoria e preço.` };
 }
 
 /* ----------------------------- 7.3 PÁGINA DO PRODUTO ----------------------------- */
@@ -648,9 +784,9 @@ function viewProduto([id]) {
 
     <article class="produto-grid" aria-labelledby="produto-titulo">
       <section aria-label="Fotos do produto">
-        <figure class="galeria-main"><img id="foto-principal" src="${p.fotos[0].src}" alt="${esc(p.fotos[0].alt)}" width="1024" height="1024" fetchpriority="high"></figure>
+        <figure class="galeria-main"><img id="foto-principal" ${ir(p.fotos[0].src, '(min-width: 900px) 50vw, 100vw')} alt="${esc(p.fotos[0].alt)}" width="1024" height="1024" fetchpriority="high"></figure>
         ${p.fotos.length > 1 ? `<div class="thumbs" role="group" aria-label="Escolher foto">
-          ${p.fotos.map((f, i) => `<button type="button" class="thumb" data-i="${i}" aria-pressed="${i === 0}" aria-label="${rotuloFoto(f)}"><img src="${f.src}" alt="" width="152" height="152"></button>`).join('')}
+          ${p.fotos.map((f, i) => `<button type="button" class="thumb" data-i="${i}" aria-pressed="${i === 0}" aria-label="${rotuloFoto(f)}"><img ${ir(f.src, '76px')} alt="" width="152" height="152"></button>`).join('')}
         </div>` : ''}
       </section>
 
@@ -700,7 +836,7 @@ function viewProduto([id]) {
     $$('.thumb', main).forEach(btn => btn.addEventListener('click', () => {
       const f = p.fotos[Number(btn.dataset.i)];
       const principal = $('#foto-principal', main);
-      principal.src = f.src; principal.alt = f.alt;
+      principal.src = f.src; principal.srcset = srcsetDe(f.src); principal.alt = f.alt;
       $$('.thumb', main).forEach(b => b.setAttribute('aria-pressed', String(b === btn)));
     }));
 
@@ -725,7 +861,13 @@ function viewProduto([id]) {
       toast(`${p.nome} foi adicionado ao carrinho.`, { href: '#/carrinho', rotulo: 'Ver carrinho' });
     });
   };
-  return { titulo: p.nome, html, depois };
+  const jsonld = {
+    '@context': 'https://schema.org', '@type': 'Product', name: p.nome, description: p.descricao,
+    category: nomeCategoria(p.categoria), image: p.fotos.map(f => f.src), sku: `ALQ-${p.id.toUpperCase()}`,
+    brand: { '@type': 'Brand', name: 'Alquim' },
+    offers: { '@type': 'Offer', priceCurrency: 'BRL', price: p.preco.toFixed(2), availability: 'https://schema.org/InStock' }
+  };
+  return { titulo: p.nome, descricao: `${p.nome}: ${p.resumo} ${moeda(p.preco)} em até ${CFG.PARCELAS}x sem juros. Coleção Tiffany Blue da Alquim.`, jsonld, html, depois };
 }
 
 /* ----------------------------- 7.4 CARRINHO ----------------------------- */
@@ -776,7 +918,7 @@ function htmlCarrinhoInterno(erroCupom = '') {
         ${linhas.map(l => {
           const p = l.produto, f = p.fotos[0];
           return `<li class="cart-item">
-            <img src="${f.src}" alt="${esc(f.alt)}" width="120" height="120" loading="lazy">
+            <img ${ir(f.src, '(min-width: 900px) 120px, 88px')} alt="${esc(f.alt)}" width="120" height="120" loading="lazy">
             <div>
               <h3><a href="#/produto/${p.id}">${esc(p.nome)}</a></h3>
               <p class="cart-meta">${l.tam ? `Aro ${esc(l.tam)} · ` : ''}${moeda(p.preco)} cada</p>
@@ -863,6 +1005,7 @@ function viewCarrinho() {
       const codigo = e.target.elements.cupom.value.trim().toUpperCase();
       if (CFG.CUPONS[codigo]) {
         Store.set('cupom', codigo);
+        Metricas.evento('cupom');
         redesenhar('#cupom');
         status.textContent = `Cupom ${codigo} aplicado: ${CFG.CUPONS[codigo].rotulo}.`;
         toast(`Cupom ${codigo} aplicado: ${CFG.CUPONS[codigo].rotulo}.`);
@@ -938,7 +1081,7 @@ function viewCheckout() {
       <h2 id="co-resumo-titulo">Seu pedido</h2>
       <ul class="mini-itens">
         ${Carrinho.linhas().map(l => `<li>
-          <img src="${l.produto.fotos[0].src}" alt="${esc(l.produto.fotos[0].alt)}" width="48" height="48">
+          <img ${ir(l.produto.fotos[0].src, '48px')} alt="${esc(l.produto.fotos[0].alt)}" width="48" height="48">
           <span>${esc(l.produto.nome)}${l.tam ? `, aro ${esc(l.tam)}` : ''} <span class="hint">× ${l.qtd}</span></span>
           <strong>${moeda(l.produto.preco * l.qtd)}</strong></li>`).join('')}
       </ul>
@@ -975,6 +1118,7 @@ function viewCheckout() {
         consentimento: { aceito: true, data: agora, finalidade: 'simulação de compra' }
       };
       Store.set('orders', [...Store.get('orders', []), pedido]);
+      Metricas.evento('compra');
       Carrinho.limpar();
       Store.remove('cupom');
       location.hash = '#/pedido/' + pedido.id;
@@ -996,7 +1140,7 @@ function viewPedido([id]) {
     <section class="resumo" aria-labelledby="ped-resumo">
       <h2 id="ped-resumo">Resumo</h2>
       <ul class="mini-itens">
-        ${p.itens.map(i => `<li><img src="${i.foto}" alt="${esc(i.alt)}" width="48" height="48"><span>${esc(i.nome)}${i.tam ? `, aro ${esc(i.tam)}` : ''} <span class="hint">× ${i.qtd}</span></span><strong>${moeda(i.preco * i.qtd)}</strong></li>`).join('')}
+        ${p.itens.map(i => `<li><img ${ir(i.foto, '48px')} alt="${esc(i.alt)}" width="48" height="48"><span>${esc(i.nome)}${i.tam ? `, aro ${esc(i.tam)}` : ''} <span class="hint">× ${i.qtd}</span></span><strong>${moeda(i.preco * i.qtd)}</strong></li>`).join('')}
       </ul>
       ${blocoResumo(p.totais)}
       <p class="hint" style="margin:0"><strong>Pagamento:</strong> ${esc(p.pagamento)}<br>
@@ -1067,9 +1211,12 @@ function viewContaDeslogada() {
       const erros = validar(fl, { email: V.email, senha: V.obrig('Informe sua senha.') });
       if (erros.length) { mostrarErros(fl, erros); return; }
       const email = fl.elements.email.value.trim().toLowerCase();
+      const espera = Tentativas.restante();
+      if (espera > 0) { mensagemSimples(fl, `Muitas tentativas incorretas. Aguarde ${espera} segundos e tente de novo.`); return; }
       const usuario = usuarios().find(x => x.email === email);
-      const hash = usuario ? await hashSenha(fl.elements.senha.value, email) : '';
-      if (!usuario || usuario.hash !== hash) { mensagemSimples(fl, 'E-mail ou senha incorretos. Verifique os dados ou crie uma conta.'); return; }
+      const ok = usuario ? await verificarSenha(usuario, fl.elements.senha.value) : false;
+      if (!ok) { Tentativas.falhou(); mensagemSimples(fl, 'E-mail ou senha incorretos. Verifique os dados ou crie uma conta.'); return; }
+      Tentativas.zerar();
       Sessao.entrar(usuario);
       rotear();
       toast(`Bem-vindo(a) de volta, ${primeiroNome(usuario.nome)}!`);
@@ -1093,7 +1240,7 @@ function viewContaDeslogada() {
       const agora = new Date().toISOString();
       const novo = {
         nome: fc.elements.nome.value.trim(), email,
-        hash: await hashSenha(fc.elements.senha.value, email),
+        ...(await criarCredencial(fc.elements.senha.value)),
         criadoEm: agora,
         consentimento: { aceito: true, data: agora, finalidade: 'simulação de compra' }
       };
@@ -1171,6 +1318,7 @@ function viewContaLogada(u) {
       Store.set('users', usuarios().filter(x => x.email !== u.email));
       Store.set('orders', Store.get('orders', []).filter(p => p.cliente.email !== u.email));
       Store.set('newsletter', Store.get('newsletter', []).filter(n => n.email !== u.email));
+      Store.set('solicitacoes', Store.get('solicitacoes', []).filter(x => x.email !== u.email));
       Sessao.sair();
       location.hash = '#/';
       toast('Sua conta e seus dados foram excluídos.');
@@ -1187,7 +1335,8 @@ function viewPrivacidade() {
     <p class="meta">Última atualização: 5 de novembro de 2026 · Em conformidade com a Lei Geral de Proteção de Dados (Lei nº 13.709/2018).</p>
   </div></div>
   <div class="container narrow prose">
-    <div class="notice"><p><strong>Resumo em uma frase:</strong> a Alquim é uma loja <em>fictícia</em> feita para um trabalho acadêmico; tudo o que você digita fica somente no seu navegador e é usado exclusivamente para simular uma compra.</p></div>
+    <div class="notice"><p><strong>Resumo em uma frase:</strong> a Alquim é uma loja <em>fictícia</em> feita para um trabalho acadêmico; tudo o que você digita fica somente no seu navegador e é usado exclusivamente para simular uma compra.</p>
+    <p><strong>Aviso:</strong> este texto é um modelo educacional. Em um site real, a conformidade com a LGPD deve ser validada por profissional jurídico conforme o contexto do negócio.</p></div>
 
     <h2>1. Quem somos (controlador)</h2>
     <p>A Alquim é um projeto acadêmico de e-commerce, desenvolvido por <strong>[Seu nome]</strong> como trabalho de <strong>[curso / instituição]</strong>. Não há empresa, venda real, cobrança ou entrega. Contato sobre privacidade (fictício): <a href="mailto:privacidade@alquim.example">privacidade@alquim.example</a>.</p>
@@ -1201,6 +1350,20 @@ function viewPrivacidade() {
     </ul>
     <p><strong>Não coletamos</strong> CPF, número de cartão, dados bancários, dados sensíveis nem dados de crianças e adolescentes. Seguimos o princípio da <em>minimização</em> (art. 6º, III).</p>
 
+    <h3>Inventário de dados: o que, por quê, onde e com quem</h3>
+    <table>
+      <thead><tr><th>Dado</th><th>Quando coletamos</th><th>Finalidade</th><th>Base legal</th><th>Onde fica</th><th>Compartilhado com</th><th>Retenção</th></tr></thead>
+      <tbody>
+        <tr><td>Nome, e-mail, senha (hash)</td><td>Cadastro</td><td>Criar a conta de demonstração</td><td>Consentimento (art. 7º, I)</td><td>localStorage do navegador</td><td>Ninguém</td><td>Até excluir a conta</td></tr>
+        <tr><td>E-mail</td><td>Newsletter</td><td>Simular o envio de novidades</td><td>Consentimento</td><td>localStorage</td><td>Ninguém</td><td>Até excluir/limpar</td></tr>
+        <tr><td>Nome, e-mail, endereço, forma de pagamento</td><td>Checkout</td><td>Registrar o pedido fictício</td><td>Consentimento</td><td>localStorage</td><td>Ninguém</td><td>Até excluir/limpar</td></tr>
+        <tr><td>Nome, e-mail, tipo do pedido</td><td>Canal do titular</td><td>Atender direitos da LGPD</td><td>Consentimento / obrigação legal</td><td>localStorage</td><td>Ninguém</td><td>Até excluir/limpar</td></tr>
+        <tr><td>Itens do carrinho, sessão</td><td>Navegação</td><td>Funcionamento da loja</td><td>Execução do serviço (necessários)</td><td>localStorage</td><td>Ninguém</td><td>Até excluir/limpar</td></tr>
+        <tr><td>Tamanho do texto e contraste</td><td>Barra de acessibilidade</td><td>Lembrar sua preferência</td><td>Consentimento (cookie “Preferências”)</td><td>localStorage</td><td>Ninguém</td><td>Até revogar</td></tr>
+        <tr><td>Contagens anônimas e Web Vitals</td><td>Navegação</td><td>Medir uso e desempenho</td><td>Consentimento (cookie “Estatísticas”)</td><td>localStorage</td><td>Ninguém</td><td>Até revogar (apagadas na hora)</td></tr>
+      </tbody>
+    </table>
+
     <h2>3. Para que usamos seus dados (finalidade) e base legal</h2>
     <p>Usamos os dados <strong>estritamente para fins da simulação de compra</strong>: manter o carrinho, criar sua conta de demonstração, registrar pedidos fictícios e (se você pedir) mostrar novidades. A base legal é o <strong>seu consentimento</strong> (art. 7º, I), que você manifesta marcando a caixa específica em cada formulário. Itens estritamente necessários ao funcionamento (carrinho, sessão) não dependem de consentimento.</p>
 
@@ -1212,8 +1375,8 @@ function viewPrivacidade() {
       <thead><tr><th>Categoria</th><th>Finalidade</th><th>Pode recusar?</th></tr></thead>
       <tbody>
         <tr><td>Estritamente necessários</td><td>Carrinho, sessão, pedidos e registro da sua escolha de cookies</td><td>Não (o site não funciona sem eles)</td></tr>
-        <tr><td>Preferências</td><td>Lembrar escolhas de visualização</td><td>Sim</td></tr>
-        <tr><td>Estatísticas</td><td>Medir uso do site de forma agregada (não ativo nesta simulação)</td><td>Sim</td></tr>
+        <tr><td>Preferências</td><td>Lembrar o tamanho do texto e o alto contraste escolhidos na barra de acessibilidade</td><td>Sim</td></tr>
+        <tr><td>Estatísticas</td><td>Contagens anônimas de páginas e ações, medição de desempenho (Core Web Vitals) e registro de erros; visíveis no <a href="#/metricas">Painel de métricas</a>. Nada sai do seu navegador.</td><td>Sim</td></tr>
         <tr><td>Marketing</td><td>Ofertas personalizadas (não ativo nesta simulação)</td><td>Sim</td></tr>
       </tbody>
     </table>
@@ -1221,7 +1384,7 @@ function viewPrivacidade() {
 
     <h2>6. Seus direitos (art. 18 da LGPD)</h2>
     <p>Você pode, a qualquer momento: confirmar o tratamento; acessar seus dados; corrigi-los; pedir anonimização, bloqueio ou eliminação; solicitar portabilidade; saber com quem os dados foram compartilhados (com ninguém); e <strong>revogar o consentimento</strong>.</p>
-    <p>Como exercer: na página <a href="#/conta">Minha conta</a> você pode <strong>baixar seus dados</strong> e <strong>excluir sua conta e todos os dados</strong> com um clique. Também pode escrever para o e-mail de contato acima.</p>
+    <p>Como exercer: na página <a href="#/conta">Minha conta</a> você pode <strong>baixar seus dados</strong> e <strong>excluir sua conta e todos os dados</strong> com um clique. Você também pode registrar qualquer pedido no <a href="#/titular">Canal do titular</a> (protocolo e resposta em até 15 dias) ou escrever para o e-mail de contato acima.</p>
 
     <h2>7. Por quanto tempo guardamos</h2>
     <p>Enquanto você não excluir sua conta ou limpar os dados do navegador. Não há cópia em nenhum outro local.</p>
@@ -1270,6 +1433,301 @@ function viewTermos() {
   return { titulo: 'Termos de Uso', html };
 }
 
+/* ----------------------------- 7.9 CANAL DO TITULAR (LGPD, art. 18 e 19) -----------------------------
+   Procedimento para atender os direitos dos titulares: formulário → protocolo → prazo de resposta (15 dias). */
+const TIPOS_SOLICITACAO = [
+  ['confirmacao', 'Confirmação de que vocês tratam meus dados'],
+  ['acesso', 'Acesso aos meus dados'],
+  ['correcao', 'Correção de dados incompletos ou desatualizados'],
+  ['eliminacao', 'Anonimização, bloqueio ou eliminação de dados'],
+  ['portabilidade', 'Portabilidade dos dados'],
+  ['compartilhamento', 'Informação sobre compartilhamento de dados'],
+  ['revogacao', 'Revogação do consentimento']
+];
+function viewTitular() {
+  const html = `
+  <div class="page-head"><div class="container narrow">
+    <h1>Canal do titular de dados</h1>
+    <p>Exerça os direitos previstos no art. 18 da LGPD. Registre seu pedido e receba um número de protocolo.</p>
+  </div></div>
+  <div class="container narrow prose">
+    <div class="notice"><p><strong>Atalho:</strong> com a sessão iniciada, você pode <a href="#/conta">baixar seus dados ou excluir a conta</a> na hora. Use este formulário para os demais pedidos ou se não tiver conta.</p></div>
+    <div id="titular-area">
+      <form id="form-titular" novalidate>
+        <div class="error-summary" role="alert" tabindex="-1" hidden></div>
+        <p class="hint" style="margin-bottom:1rem">Campos marcados com <span class="req" aria-hidden="true">*</span><span class="sr-only">asterisco</span> são obrigatórios.</p>
+        <div class="form-grid">
+          ${campo({ id: 'ti-nome', name: 'nome', label: 'Nome completo', autocomplete: 'name' })}
+          ${campo({ id: 'ti-email', name: 'email', label: 'E-mail para resposta', type: 'email', autocomplete: 'email' })}
+          ${campoSelect({ id: 'ti-tipo', name: 'tipo', label: 'O que você deseja solicitar?', opcoes: TIPOS_SOLICITACAO })}
+          ${campoTexto({ id: 'ti-detalhes', name: 'detalhes', label: 'Detalhes do pedido', hint: 'Não informe dados sensíveis neste campo.' })}
+          <div class="consent-box">
+            ${campoCheck({ id: 'ti-consent', name: 'consent', html: 'Declaro que sou o titular dos dados e <strong>consinto com o uso do meu nome e e-mail estritamente para atender a esta solicitação</strong> (simulação). Veja a <a href="#/privacidade" target="_blank" rel="noopener">Política de Privacidade<span class="sr-only"> (abre em nova aba)</span></a>.' })}
+          </div>
+          <button type="submit" class="btn">Enviar solicitação</button>
+        </div>
+      </form>
+    </div>
+    <h2>Como tratamos o seu pedido</h2>
+    <ol>
+      <li>Você envia o formulário e recebe na hora um <strong>número de protocolo</strong>.</li>
+      <li>A resposta completa é dada em até <strong>15 dias</strong> (LGPD, art. 19, II).</li>
+      <li>Podemos pedir informações adicionais para confirmar que você é mesmo o titular.</li>
+    </ol>
+    <p>Encarregado pelo tratamento de dados (fictício): <strong>[Seu nome]</strong> — <a href="mailto:privacidade@alquim.example">privacidade@alquim.example</a>.</p>
+  </div>`;
+
+  const depois = (main) => {
+    const form = $('#form-titular', main);
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const erros = validar(form, {
+        nome: V.nome, email: V.email, tipo: V.obrig('Selecione o tipo de solicitação.'),
+        consent: V.consent('Para enviar, marque a declaração e o consentimento.')
+      });
+      if (erros.length) { mostrarErros(form, erros); return; }
+      const f = form.elements;
+      const agora = new Date(), prazo = new Date(agora.getTime() + 15 * 24 * 3600 * 1000);
+      const sol = {
+        protocolo: 'TIT-' + (Math.floor(Math.random() * 900000) + 100000),
+        tipo: f.tipo.value, nome: f.nome.value.trim(), email: f.email.value.trim().toLowerCase(),
+        detalhes: f.detalhes.value.trim(), data: agora.toISOString(), prazo: prazo.toISOString(), status: 'Recebida (simulação)'
+      };
+      Store.set('solicitacoes', [...Store.get('solicitacoes', []), sol]);
+      const rotulo = TIPOS_SOLICITACAO.find(t => t[0] === sol.tipo)[1];
+      $('#titular-area', main).innerHTML = `
+        <div class="notice" id="titular-ok" tabindex="-1" role="status">
+          <h2 style="margin-top:0">Solicitação registrada</h2>
+          <p>Protocolo: <strong>${sol.protocolo}</strong></p>
+          <p>Tipo: ${esc(rotulo)}</p>
+          <p>Resposta completa até <strong>${prazo.toLocaleDateString('pt-BR')}</strong> (15 dias, LGPD art. 19, II).</p>
+          <p class="hint">Simulação: o pedido foi guardado apenas neste navegador.</p>
+        </div>`;
+      $('#titular-ok', main).focus();
+    });
+  };
+  return { titulo: 'Canal do titular de dados', html, depois, descricao: 'Canal para exercer os direitos da LGPD: acesso, correção, eliminação, portabilidade e revogação do consentimento.' };
+}
+
+/* ----------------------------- 7.10 GUIA DE ESTILO (Design System) -----------------------------
+   Documenta os padrões reutilizáveis: cores (com contraste calculado ao vivo), tipografia e componentes. */
+function luminancia(hexCor) {
+  const [r, g, b] = hexCor.replace('#', '').match(/.{2}/g).map(h => parseInt(h, 16) / 255)
+    .map(c => c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+function razaoContraste(a, b) {
+  const [x, y] = [luminancia(a), luminancia(b)].sort((m, n) => n - m);
+  return (x + 0.05) / (y + 0.05);
+}
+const nivelContraste = (r) => r >= 7 ? 'AAA' : r >= 4.5 ? 'AA' : r >= 3 ? 'só texto grande e ícones' : 'reprovado para texto';
+const tokenCSS = (nome) => getComputedStyle(document.documentElement).getPropertyValue(nome).trim();
+
+function viewGuiaEstilo() {
+  const cores = [
+    ['--tiffany', 'Azul Tiffany', 'Cor de destaque: fundos, selos e botões'],
+    ['--tiffany-100', 'Tiffany 100', 'Fundos suaves de seções'],
+    ['--teal', 'Teal', 'Texto e links sobre fundo claro'],
+    ['--teal-dark', 'Teal escuro', 'Hover de links'],
+    ['--ink', 'Grafite', 'Texto principal e botões'],
+    ['--muted', 'Cinza de apoio', 'Texto secundário'],
+    ['--mist', 'Névoa', 'Fundos neutros'],
+    ['--line', 'Linha', 'Bordas e divisores'],
+    ['--danger', 'Erro', 'Mensagens de erro']
+  ];
+  const pares = [
+    ['--teal', '--white', 'Links e texto de destaque sobre branco'],
+    ['--ink', '--tiffany', 'Texto sobre o Azul Tiffany (botões, selos)'],
+    ['--ink', '--white', 'Texto principal sobre branco'],
+    ['--muted', '--white', 'Texto secundário sobre branco'],
+    ['--white', '--ink', 'Texto branco sobre grafite (botões, rodapé)'],
+    ['--danger', '--white', 'Mensagens de erro sobre branco'],
+    ['--tiffany', '--white', 'Azul Tiffany sobre branco (por isso nunca usado como texto)']
+  ];
+  const html = `
+  <div class="page-head"><div class="container narrow">
+    <h1>Guia de estilo</h1>
+    <p>Design System da Alquim: padrões reutilizáveis para manter a consistência visual e a acessibilidade.</p>
+  </div></div>
+  <div class="container narrow prose">
+    <h2>1. Princípios</h2>
+    <ul>
+      <li><strong>Elegância com clareza:</strong> muito espaço em branco, tipografia serifada nos títulos e uma única cor de destaque.</li>
+      <li><strong>Acessibilidade primeiro:</strong> contraste mínimo AA, foco sempre visível e alvos de toque de 44 px.</li>
+      <li><strong>Mobile-first:</strong> começamos pelo celular e ampliamos em 600, 900 e 1200 px.</li>
+    </ul>
+
+    <h2>2. Cores</h2>
+    <ul class="swatches">
+      ${cores.map(([v, nome, uso]) => { const h = tokenCSS(v); return `<li><span class="swatch" style="background:${h}" aria-hidden="true"></span><strong>${nome}</strong><code>${h}</code><span class="hint">${uso}</span></li>`; }).join('')}
+    </ul>
+
+    <h2>3. Contraste (calculado ao vivo, WCAG 2.2)</h2>
+    <table>
+      <thead><tr><th>Texto</th><th>Fundo</th><th>Uso</th><th>Razão</th><th>Nível</th></tr></thead>
+      <tbody>
+        ${pares.map(([t, f, uso]) => { const r = razaoContraste(tokenCSS(t), tokenCSS(f)); return `<tr><td><code>${tokenCSS(t)}</code></td><td><code>${tokenCSS(f)}</code></td><td>${uso}</td><td>${r.toFixed(1)}:1</td><td>${nivelContraste(r)}</td></tr>`; }).join('')}
+      </tbody>
+    </table>
+    <p class="hint">Mínimos da WCAG: 4,5:1 para texto normal, 3:1 para texto grande e componentes de interface.</p>
+
+    <h2>4. Tipografia</h2>
+    <p class="hint">Títulos: serifada do sistema (Cormorant Garamond/Georgia). Corpo: sans-serif do sistema (sem fontes externas, por performance e privacidade).</p>
+    <p style="font-family:var(--font-display);font-size:2.25rem;font-weight:600;line-height:1.15;margin:0 0 .5rem">Título 1 — O azul que transforma</p>
+    <p style="font-family:var(--font-display);font-size:1.75rem;font-weight:600;margin:0 0 .5rem">Título 2 — Compre por categoria</p>
+    <p style="font-family:var(--font-display);font-size:1.35rem;font-weight:600;margin:0 0 .5rem">Título 3 — Nome do produto</p>
+    <p>Texto de corpo (1 rem, altura de linha 1,6): peças artesanais com cristais em azul-turquesa.</p>
+
+    <h2>5. Botões</h2>
+    <p class="estilo-linha">
+      <button type="button" class="btn">Primário</button>
+      <button type="button" class="btn btn-outline">Secundário</button>
+      <button type="button" class="btn btn-tiffany">Destaque</button>
+      <button type="button" class="btn btn-danger">Perigo</button>
+      <button type="button" class="btn" disabled>Desabilitado</button>
+    </p>
+
+    <h2>6. Formulários e estados</h2>
+    <div class="form-grid" style="max-width:420px">
+      ${campo({ id: 'g-normal', name: 'g1', label: 'Campo normal', hint: 'Dica de preenchimento.' })}
+      <div class="field has-error">
+        <label for="g-erro">Campo com erro<span class="req" aria-hidden="true"> *</span></label>
+        <input id="g-erro" type="email" value="maria@" aria-invalid="true" aria-describedby="g-erro-err">
+        <p class="field-error" id="g-erro-err">Informe um e-mail válido, como nome@exemplo.com.</p>
+      </div>
+      ${campoCheck({ id: 'g-check', name: 'g3', html: 'Caixa de consentimento (LGPD)' })}
+    </div>
+
+    <h2>7. Mensagens</h2>
+    <div class="notice"><p><strong>Aviso informativo:</strong> usado para dicas e explicações.</p></div>
+    <div class="error-summary" style="margin-top:1rem"><h3 class="error-title">Corrija 2 campos para continuar:</h3><ul><li><a href="#/guia-de-estilo">Informe seu e-mail.</a></li><li><a href="#/guia-de-estilo">Marque a caixa de consentimento.</a></li></ul></div>
+
+    <h2>8. Card de produto</h2>
+    <div style="max-width:260px">${cardProduto(PRODUTOS.find(p => p.id === 'colar3'))}</div>
+
+    <h2>9. Pontos de quebra (responsividade)</h2>
+    <table>
+      <thead><tr><th>Largura</th><th>Dispositivo</th><th>Mudanças principais</th></tr></thead>
+      <tbody>
+        <tr><td>até 599 px</td><td>Celular</td><td>2 colunas de produtos, menu hambúrguer</td></tr>
+        <tr><td>600 a 899 px</td><td>Tablet</td><td>3 colunas de produtos, formulários em 2 colunas</td></tr>
+        <tr><td>900 a 1199 px</td><td>Notebook</td><td>Menu horizontal, 4 colunas, resumo do pedido fixo</td></tr>
+        <tr><td>1200 px ou mais</td><td>Desktop</td><td>Largura máxima do conteúdo de 1200 px</td></tr>
+      </tbody>
+    </table>
+  </div>`;
+  return { titulo: 'Guia de estilo', html, descricao: 'Design System da Alquim: cores com contraste calculado, tipografia, botões, formulários e componentes.' };
+}
+
+/* ----------------------------- 7.11 MAPA DO SITE (arquitetura da informação / eMAG) ----------------------------- */
+function viewMapa() {
+  const html = `
+  <div class="page-head"><div class="container narrow">
+    <h1>Mapa do site</h1>
+    <p>Todas as páginas da Alquim organizadas por assunto.</p>
+  </div></div>
+  <div class="container narrow prose">
+    <nav aria-label="Mapa do site">
+      <ul>
+        <li><a href="#/">Início</a></li>
+        <li><a href="#/colecao">Coleção Tiffany Blue</a>
+          <ul>
+            ${CATEGORIAS.map(c => `<li><a href="#/colecao?cat=${c.slug}">${c.nome}</a>
+              <ul>${PRODUTOS.filter(p => p.categoria === c.slug).map(p => `<li><a href="#/produto/${p.id}">${esc(p.nome)}</a></li>`).join('')}</ul></li>`).join('')}
+          </ul>
+        </li>
+        <li>Compra
+          <ul><li><a href="#/carrinho">Carrinho</a></li><li><a href="#/checkout">Finalizar compra</a></li></ul>
+        </li>
+        <li>Minha conta
+          <ul><li><a href="#/conta">Entrar, cadastrar, meus dados e pedidos</a></li></ul>
+        </li>
+        <li>Privacidade e legal
+          <ul>
+            <li><a href="#/privacidade">Política de Privacidade</a></li>
+            <li><a href="#/termos">Termos de Uso</a></li>
+            <li><a href="#/titular">Canal do titular de dados (LGPD)</a></li>
+          </ul>
+        </li>
+        <li>Documentação do projeto
+          <ul><li><a href="#/guia-de-estilo">Guia de estilo (Design System)</a></li><li><a href="#/metricas">Painel de métricas</a></li></ul>
+        </li>
+      </ul>
+    </nav>
+  </div>`;
+  return { titulo: 'Mapa do site', html, descricao: 'Mapa do site da Alquim: coleção, categorias, produtos, conta, privacidade e documentação.' };
+}
+
+/* ----------------------------- 7.12 PAINEL DE MÉTRICAS (analytics com consentimento) ----------------------------- */
+function viewMetricas() {
+  const ativa = Metricas.ativa();
+  const m = Metricas.ler();
+  const ev = (k) => m.eventos[k] || 0;
+  const aviso = ativa ? '' : `
+    <div class="notice"><p><strong>As métricas estão desligadas.</strong> Elas só são coletadas se você autorizar a categoria “Estatísticas” nos cookies (LGPD).</p>
+      <p><button type="button" class="btn btn-small" id="abrir-prefs-metricas">Gerenciar preferências de cookies</button></p></div>`;
+
+  const etapas = [['Peças visualizadas', 'ver_produto'], ['Adicionadas ao carrinho', 'add_carrinho'], ['Checkout iniciado', 'inicio_checkout'], ['Compras concluídas (simuladas)', 'compra']];
+  const base = ev('ver_produto');
+  const funil = etapas.map(([rotulo, k], i) => {
+    const n = ev(k), ant = i ? ev(etapas[i - 1][1]) : 0;
+    const larg = base ? Math.min(100, Math.round(n / base * 100)) : 0;
+    return `<tr><th scope="row">${rotulo}</th><td>${n}</td><td>${i === 0 ? '—' : (ant ? Math.round(n / ant * 100) + '%' : '—')}</td><td><span class="barra" aria-hidden="true"><span style="width:${larg}%"></span></span></td></tr>`;
+  }).join('');
+
+  const faixas = { LCP: [2500, 4000, 'ms'], CLS: [0.1, 0.25, ''], INP: [200, 500, 'ms'] };
+  const descVital = { LCP: 'Maior elemento visível carregado', CLS: 'Estabilidade visual (saltos de layout)', INP: 'Resposta às interações (aproximado)' };
+  const vitais = Object.entries(faixas).map(([nome, [bom, medio, un]]) => {
+    const v = m.vitais[nome];
+    const estado = v === undefined ? '—' : (v <= bom ? 'Bom' : v <= medio ? 'Precisa melhorar' : 'Ruim');
+    return `<tr><th scope="row">${nome}</th><td>${descVital[nome]}</td><td>${v === undefined ? '—' : v + (un ? ' ' + un : '')}</td><td>${estado}</td></tr>`;
+  }).join('');
+
+  const paginas = Object.entries(m.paginas).sort((a, b) => b[1] - a[1]);
+  const produtos = Object.entries(m.produtos).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const log = Store.get('log', []);
+  const html = `
+  <div class="page-head"><div class="container narrow">
+    <h1>Painel de métricas</h1>
+    <p>Demonstração de analytics com privacidade: dados anônimos, agregados e guardados só neste navegador.</p>
+  </div></div>
+  <div class="container narrow prose">
+    ${aviso}
+    ${ativa ? `<p class="meta">Coletando desde ${new Date(m.desde).toLocaleString('pt-BR')} · ${paginas.reduce((s, [, n]) => s + n, 0)} visualizações de página.</p>
+    <h2>Funil de compra</h2>
+    <table>
+      <thead><tr><th>Etapa</th><th>Quantidade</th><th>% da etapa anterior</th><th>Proporção</th></tr></thead>
+      <tbody>${funil}</tbody>
+    </table>
+    <p class="hint">As adições feitas direto nos cards da vitrine contam como “adicionadas”, mesmo sem visitar a página do produto.</p>
+
+    <h2>Core Web Vitals (desta sessão)</h2>
+    <table>
+      <thead><tr><th>Métrica</th><th>O que mede</th><th>Valor</th><th>Avaliação</th></tr></thead>
+      <tbody>${vitais}</tbody>
+    </table>
+    <p class="hint">Referências do web.dev: LCP bom até 2,5 s; CLS bom até 0,1; INP bom até 200 ms.</p>
+
+    <h2>Páginas mais vistas</h2>
+    ${paginas.length ? `<table><thead><tr><th>Página</th><th>Visualizações</th></tr></thead><tbody>${paginas.map(([p, n]) => `<tr><td>${esc(p)}</td><td>${n}</td></tr>`).join('')}</tbody></table>` : '<p>Ainda sem dados. Navegue pelo site e volte aqui.</p>'}
+
+    <h2>Peças mais vistas</h2>
+    ${produtos.length ? `<ol>${produtos.map(([id, n]) => `<li>${produtoPorId(id) ? esc(produtoPorId(id).nome) : esc(id)} — ${n}</li>`).join('')}</ol>` : '<p>Ainda sem dados.</p>'}
+
+    <h2>Monitoramento de erros</h2>
+    ${log.length ? `<ul>${log.map(l => `<li><code>${esc(l.origem)}</code> — ${esc(l.msg)} <span class="hint">(${new Date(l.quando).toLocaleString('pt-BR')})</span></li>`).join('')}</ul>` : '<p>Nenhum erro registrado.</p>'}
+
+    <p><button type="button" class="btn btn-outline" id="zerar-metricas">Apagar todas as métricas</button></p>` : ''}
+  </div>`;
+
+  const depois = (main) => {
+    const abrir = $('#abrir-prefs-metricas', main); if (abrir) abrir.addEventListener('click', abrirPreferencias);
+    const zerar = $('#zerar-metricas', main);
+    if (zerar) zerar.addEventListener('click', () => { Metricas.zerar(); rotear(); toast('Métricas apagadas.'); });
+  };
+  return { titulo: 'Painel de métricas', html, depois };
+}
+
 /* ----------------------------- 7.9 PÁGINA NÃO ENCONTRADA ----------------------------- */
 function view404() {
   return {
@@ -1290,9 +1748,47 @@ function view404() {
    ========================================================================= */
 const ROTAS = {
   '': viewHome, colecao: viewColecao, produto: viewProduto, carrinho: viewCarrinho,
-  checkout: viewCheckout, pedido: viewPedido, conta: viewConta, privacidade: viewPrivacidade, termos: viewTermos
+  checkout: viewCheckout, pedido: viewPedido, conta: viewConta, privacidade: viewPrivacidade, termos: viewTermos,
+  titular: viewTitular, 'guia-de-estilo': viewGuiaEstilo, 'mapa-do-site': viewMapa, metricas: viewMetricas
 };
+const SEM_INDEXACAO = ['carrinho', 'checkout', 'pedido', 'conta', 'metricas'];   // páginas privadas ou sem valor para buscadores
+const DESCRICAO_PADRAO = 'Alquim: joias artesanais e finas. Conheça a coleção Tiffany Blue com anéis, brincos, colares, pulseiras e relógios. Projeto acadêmico de e-commerce.';
+
+/* SEO: título, descrição, Open Graph, robots e dados estruturados (schema.org) de cada "página" da SPA */
+function atualizarSEO(view, rota) {
+  const desc = view.descricao || DESCRICAO_PADRAO;
+  $('meta[name="description"]').setAttribute('content', desc);
+  $('meta[property="og:title"]').setAttribute('content', document.title);
+  $('meta[property="og:description"]').setAttribute('content', desc);
+  $('meta[name="robots"]').setAttribute('content', SEM_INDEXACAO.includes(rota) ? 'noindex, nofollow' : 'index, follow');
+  const antigo = $('#ld-pagina'); if (antigo) antigo.remove();
+  if (view.jsonld) {
+    const sc = document.createElement('script');
+    sc.type = 'application/ld+json'; sc.id = 'ld-pagina'; sc.textContent = JSON.stringify(view.jsonld);
+    document.head.appendChild(sc);
+  }
+}
 let primeiraRenderizacao = true;
+
+/* Tabelas largas ficam dentro de um contêiner rolável. Só quando realmente há rolagem, o contêiner vira
+   uma região com nome e entra na ordem do Tab, para que usuários de teclado consigam rolar (WCAG 2.1.1). */
+function envolverTabelas(raiz) {
+  $$('table', raiz).forEach(t => {
+    if (t.parentElement.classList.contains('tabela-scroll')) return;
+    const titulo = (t.previousElementSibling && /^H[2-4]$/.test(t.previousElementSibling.tagName)) ? t.previousElementSibling.textContent : 'Tabela';
+    const w = document.createElement('div');
+    w.className = 'tabela-scroll'; w.dataset.rotulo = `${titulo.trim()} (tabela com rolagem)`;
+    t.parentNode.insertBefore(w, t); w.appendChild(t);
+  });
+  ajustarTabelas();
+}
+function ajustarTabelas() {
+  $$('.tabela-scroll').forEach(w => {
+    if (w.scrollWidth > w.clientWidth + 1) { w.tabIndex = 0; w.setAttribute('role', 'region'); w.setAttribute('aria-label', w.dataset.rotulo); }
+    else { w.removeAttribute('tabindex'); w.removeAttribute('role'); w.removeAttribute('aria-label'); }
+  });
+}
+window.addEventListener('resize', ajustarTabelas);
 
 /* Marca o link do menu da página atual com aria-current="page" */
 function marcarNavAtiva(categoria) {
@@ -1319,7 +1815,14 @@ function rotear() {
 
   const main = $('#conteudo');
   main.innerHTML = view.html;
+  main.removeAttribute('data-carregando');   // libera a altura reservada (ver style.css)
+  envolverTabelas(main);
   document.title = `${view.titulo} — Alquim`;
+  atualizarSEO(view, partes[0] || 'home');
+  // Analytics (só registra com consentimento de "Estatísticas")
+  Metricas.pagina(partes[0] || 'home');
+  if (partes[0] === 'produto' && produtoPorId(partes[1])) Metricas.evento('ver_produto', partes[1]);
+  if (partes[0] === 'checkout') Metricas.evento('inicio_checkout');
   fecharMenu();
   marcarNavAtiva(partes[0] === 'colecao' ? view.categoriaNav : null);
   window.scrollTo(0, 0);
@@ -1349,8 +1852,42 @@ function iniciar() {
     if (e.key === 'Escape' && nav.classList.contains('is-open')) { fecharMenu(); botaoMenu.focus(); }
   });
 
-  // "Pular para o conteúdo" — precisa tratar o clique porque o hash é usado pelo roteador
-  $('#skip-link').addEventListener('click', (e) => { e.preventDefault(); $('#conteudo').focus(); });
+  // Barra de acessibilidade (padrão eMAG): tamanho do texto e alto contraste
+  Visual.carregar();
+  $('#fonte-menos').addEventListener('click', () => Visual.ajustarFonte(-1));
+  $('#fonte-normal').addEventListener('click', () => Visual.ajustarFonte(0));
+  $('#fonte-mais').addEventListener('click', () => Visual.ajustarFonte(1));
+  $('#btn-contraste').addEventListener('click', () => Visual.alternarContraste());
+
+  // Busca interna (arquitetura da informação): painel abaixo do cabeçalho que leva à vitrine filtrada
+  const botaoBusca = $('#busca-toggle'), painelBusca = $('#busca-painel'), campoBusca = $('#busca-q');
+  const abrirBusca = (sim) => {
+    painelBusca.hidden = !sim;
+    botaoBusca.setAttribute('aria-expanded', String(sim));
+    if (sim) campoBusca.focus();
+  };
+  botaoBusca.addEventListener('click', () => abrirBusca(painelBusca.hidden));
+  painelBusca.addEventListener('keydown', (e) => { if (e.key === 'Escape') { abrirBusca(false); botaoBusca.focus(); } });
+  $('#form-busca').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const q = campoBusca.value.trim();
+    Metricas.evento('busca');
+    abrirBusca(false);
+    location.hash = '#/colecao' + (q ? '?q=' + encodeURIComponent(q) : '');
+  });
+
+  // Atalhos "Pular para…" — precisam tratar o clique porque o hash é usado pelo roteador
+  const destinos = {
+    conteudo: () => $('#conteudo'),
+    menu: () => (nav.offsetParent !== null ? $('a', nav) : botaoMenu),
+    busca: () => { abrirBusca(true); return campoBusca; },
+    rodape: () => $('#rodape')
+  };
+  $$('.skip-links a').forEach(a => a.addEventListener('click', (e) => {
+    e.preventDefault();
+    const alvo = destinos[a.dataset.alvo]();
+    if (alvo) alvo.focus();
+  }));
 
   // Botões "Adicionar" dos cards (Home, Vitrine, Relacionados): um único ouvinte delegado
   $('#conteudo').addEventListener('click', (e) => {
